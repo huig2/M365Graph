@@ -1,0 +1,57 @@
+#Provide your Office 365 Tenant Id or Tenant Domain Name
+$tenantId = "INPUT HERE"
+  
+#Provide Azure AD Application (client) Id of your app. You should have granted Admin consent for this app to use the application permission “Calendars.Read” in your tenant.
+$appClientId="INPUT HERE"
+  
+#Provide Application client secret key
+$clientSecret ="INPUT HERE"
+
+#Provide the Id or UPN of the user to retrieve events 
+$userId="INPUT HERE" 
+
+#Filter - the below query returns events for next 60 days
+$startDate = (Get-Date (Get-Date).Date -UFormat '+%Y-%m-%dT%H:%M:%S.000Z')
+$endDate = (Get-Date (Get-Date).AddDays(60).Date -UFormat '+%Y-%m-%dT%H:%M:%S.000Z')
+
+#No filter - $apiUrl = https://graph.microsoft.com/v1.0/users/$userId/calendar/events
+
+
+$requestBody = @{client_id=$appClientId;client_secret=$clientSecret;grant_type="client_credentials";scope=https://graph.microsoft.com/.default;}
+$oauthResponse = Invoke-RestMethod -Method Post -Uri https://login.microsoftonline.com/$tenantId/oauth2/v2.0/token -Body $requestBody
+$accessToken = $oauthResponse.access_token
+
+#Form request headers with the acquired $accessToken
+$headers = @{'Content-Type'="application\json";'Authorization'="Bearer $accessToken"}
+
+#Set a time zone in header to get date time values returned in the specific time zone
+$TimeZone=(Get-TimeZone).Id
+$headers.Add('Prefer', 'outlook.timezone="' + $TimeZone + '"')
+
+$apiUrl = https://graph.microsoft.com/v1.0/users/$userId/calendar/events?`$filter=start/dateTime ge '$($startDate)' and start/dateTime lt '$($endDate)'
+
+$Result = @()
+While ($apiUrl -ne $Null)
+{
+$Response = Invoke-RestMethod -Method GET -Uri $apiUrl -ContentType "application\json" -Headers $headers
+if($Response.value)
+{
+ForEach($event in  $Response.Value)
+{
+$Result += New-Object PSObject -property $([ordered]@{ 
+Subject = $event.subject
+Organizer = $event.organizer.emailAddress.name
+Attendees = (($event.attendees | select -expand emailAddress) | Select -expand name) -join ','
+StartTime = [DateTime]$event.start.dateTime
+EndTime = [DateTime]$event.end.dateTime
+DurationInMinutes=([DateTime]$event.end.dateTime-[DateTime]$event.start.dateTime).TotalMinutes
+IsTeamsMeeting = ($event.onlineMeetingProvider -eq 'teamsForBusiness')
+Location = $event.location.displayName
+IsCancelled=$event.isCancelled
+})
+}
+}
+$apiUrl = $Response.'@Odata.NextLink'
+}
+
+$Result | Where-Object { $_.DurationInMinutes -ge 180} | Export-CSV "C:\Temp\CalendarEvents.CSV" -NoTypeInformation -Encoding UTF8 
